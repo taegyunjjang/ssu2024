@@ -30,13 +30,16 @@ void slabinit(){
 		if (s->bitmap == 0) {
     		panic("slabinit: failed to allocate one page for bitmap");
 		}
-		memset(s->bitmap, 0, s->num_objects_per_page);
+		memset(s->bitmap, 0, PGSIZE);
 
 		// Allocate one page for slab cache
 		s->page[0] = kalloc();
 		if (s->page[0] == 0) {
 			kfree(s->bitmap);
 			panic("slabinit: failed to allocate one page for slab cache");
+		}
+		for (int i = 1; i < MAX_PAGES_PER_SLAB; i++) {
+			s->page[i] = 0;
 		}
 	}
 }
@@ -45,9 +48,6 @@ char *kmalloc(int size){
 	acquire(&stable.lock);
 
 	struct slab *s = 0;
-	
-	// cprintf("prev Kmalloc\n");
-	// slabdump();
 
 	for (int i = 0; i < NSLAB; i++) {
 		if (size <= slab_size[i]) {
@@ -69,36 +69,34 @@ char *kmalloc(int size){
 
 		int page_idx = s->num_pages;
 		s->page[page_idx] = alloc_page;
+
 		s->num_pages++;
 		s->num_free_objects += s->num_objects_per_page;
 
-		for (int i = page_idx * s->num_objects_per_page; i < (page_idx + 1) * s->num_objects_per_page; i++) {
-			s->bitmap[i] = 0;
-		}
+		s->bitmap[(page_idx * s->num_objects_per_page) / 8] |= (1 << (page_idx * s->num_objects_per_page) % 8);
+        s->num_free_objects--;
+        s->num_used_objects++;
+        char *obj = s->page[page_idx];
+        
+        release(&stable.lock);
+        return obj;
 	}
 
-	int idx = -1;
-	for (int i = 0; i < s->num_objects_per_page * MAX_PAGES_PER_SLAB; i++) {
-		if (s->bitmap[i] == 0) {
-			idx = i;
-			break;
+	for (int i = 0; i < s->num_objects_per_page * s->num_pages; i++) {
+		if ((s->bitmap[i / 8] & (1 << (i % 8))) == 0) {
+			s->bitmap[i / 8] |= (1 << (i % 8));
+            s->num_free_objects--;
+            s->num_used_objects++;
+
+            int page_idx = i / s->num_objects_per_page;
+            int offset = i % s->num_objects_per_page;
+            char *obj = s->page[page_idx] + offset * s->size;
+
+            release(&stable.lock);
+            return obj;
 		}
 	}
-
-	s->bitmap[idx] = 1;
-	s->num_free_objects--;
-	s->num_used_objects++;
-	
-	int page_idx = idx / s->num_objects_per_page;
-	int offset = idx % s->num_objects_per_page; 
-	char *obj = s->page[page_idx] + offset * s->size;
-
-	release(&stable.lock);
-	
-	// cprintf("next kmalloc\n");
-	// slabdump();
-
-	return obj;
+	return 0;
 }
 
 void kmfree(char *addr, int size){
@@ -118,7 +116,6 @@ void kmfree(char *addr, int size){
         panic("kmfree: invalid size");
     }
 
-	int objects = s->num_objects_per_page;
 
 	int page_idx = -1;
 	for (int i = 0; i < s->num_pages; i++) {
@@ -128,36 +125,44 @@ void kmfree(char *addr, int size){
 		}
 	}
 
+	int objects = s->num_objects_per_page;
 	int offset = (addr - s->page[page_idx]) / s->size;
+    int idx = page_idx * objects + offset;
 
-	int bit_idx =  page_idx * objects + offset;
-	s->bitmap[bit_idx] = 0;
+    if ((s->bitmap[idx / 8] & (1 << (idx % 8))) == 0) {
+        release(&stable.lock);
+        panic("kmfree: double free or invalid address");
+    }
 
-	s->num_free_objects++;
-	s->num_used_objects--;
+    s->bitmap[idx / 8] &= ~(1 << (idx % 8));
+    s->num_free_objects++;
+    s->num_used_objects--;
+
 	/*
-	// Page deallocation, if all slabs in each page is released
-	int page_dealloc = 1;
-	for (int i = page_idx * objects; i < (page_idx + 1) * objects; i++) {
-		if (s->bitmap[i] == 1) {
-			page_dealloc = 0;
-			break;
-		}
-	}
+	// Page deallocation, if all slabs in each page is released 
+    int page_dealloc = 1;
+    for (int i = page_idx * objects; i < (page_idx + 1) * objects; i++) {
+        if (s->bitmap[i / 8] & (1 << (i % 8))) {
+            page_dealloc = 0;
+            break;
+        }
+    }
 
-	if (page_dealloc) {
-		kfree(s->page[page_idx]);
+    if (page_dealloc) {
+        kfree(s->page[page_idx]);
+        s->page[page_idx] = 0;
+        s->num_pages--;
 
-		for (int i = page_idx; i < s->num_pages - 1; i++) {
-			s->page[i] = s->page[i + 1];
-		}
-		s->num_pages--;
+        for (int i = page_idx; i < s->num_pages; i++) {
+            s->page[i] = s->page[i + 1];
+        }
 
-		for (int i = page_idx * objects; i < (s->num_pages + 1) * objects; i++) {
-			s->bitmap[i] = s->bitmap[i + objects];
-		}
-	}
+        for (int i = page_idx * objects; i < (s->num_pages + 1) * objects; i++) {
+            s->bitmap[i / 8] = s->bitmap[(i + objects) / 8];
+        }
+    }
 	*/
+	
 	release(&stable.lock);
 }
 
