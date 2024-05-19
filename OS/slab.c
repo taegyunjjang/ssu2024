@@ -138,7 +138,6 @@ void kmfree(char *addr, int size){
     s->num_free_objects++;
     s->num_used_objects--;
 
-	/*
 	// Page deallocation, if all slabs in each page is released 
     int page_dealloc = 1;
     for (int i = page_idx * objects; i < (page_idx + 1) * objects; i++) {
@@ -152,16 +151,23 @@ void kmfree(char *addr, int size){
         kfree(s->page[page_idx]);
         s->page[page_idx] = 0;
         s->num_pages--;
+		s->num_free_objects -= s->num_objects_per_page;
 
         for (int i = page_idx; i < s->num_pages; i++) {
             s->page[i] = s->page[i + 1];
         }
 
-        for (int i = page_idx * objects; i < (s->num_pages + 1) * objects; i++) {
-            s->bitmap[i / 8] = s->bitmap[(i + objects) / 8];
+        if (s->size >= 1024) {
+			for (int i = page_idx * objects; i < (page_idx + 1) * objects; i++) {
+				s->bitmap[i / 8] &= ~(1 << (i % 8));
+			}
+		}
+		else {
+			for (int i = page_idx * objects; i < (s->num_pages + 1) * objects; i++) {
+				s->bitmap[i / 8] = s->bitmap[(i + objects) / 8];
+			}
         }
     }
-	*/
 	
 	release(&stable.lock);
 }
