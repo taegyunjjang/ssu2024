@@ -527,17 +527,19 @@ writei(struct inode *ip, char *src, uint off, uint n)
 
     // indirect block allocate
     if (ip->addrs[NDIRECT]) {
-      struct buf *indirect_bp = bread(ip->dev, ip->addrs[NDIRECT]);
-      uint *a = (uint*)indirect_bp->data;
+      ip->addrs[NDIRECT] = get_block(ip, ip->addrs[NDIRECT]);
+      iupdate(ip);
+
+      struct buf *new_bp = bread(ip->dev, ip->addrs[NDIRECT]);
+      uint *a = (uint*)new_bp->data;
       
       for (int j = 0; j < NINDIRECT; j++) {
           if (a[j]) {
-            uint new_indirect_block = get_block(ip, a[j]);
-            a[j] = new_indirect_block;
+            a[j] = get_block(ip, a[j]); 
           }
       }
-      log_write(indirect_bp);
-      brelse(indirect_bp);
+      log_write(new_bp);
+      brelse(new_bp);
     }
     ip->shared = 0;
   }
