@@ -503,6 +503,7 @@ writei(struct inode *ip, char *src, uint off, uint n)
 {
   uint tot, m;
   struct buf *bp;
+  int block_written = 0; // to handle transaction
 
   if(ip->type == T_DEV){
     if(ip->major < 0 || ip->major >= NDEV || !devsw[ip->major].write)
@@ -522,20 +523,27 @@ writei(struct inode *ip, char *src, uint off, uint n)
         uint new_direct_block = get_block(ip, ip->addrs[i]);
         ip->addrs[i] = new_direct_block;
         iupdate(ip);
+        block_written++;
       }
     }
 
     // indirect block allocate
     if (ip->addrs[NDIRECT]) {
-      ip->addrs[NDIRECT] = get_block(ip, ip->addrs[NDIRECT]);
-      iupdate(ip);
-
       struct buf *new_bp = bread(ip->dev, ip->addrs[NDIRECT]);
       uint *a = (uint*)new_bp->data;
       
       for (int j = 0; j < NINDIRECT; j++) {
           if (a[j]) {
-            a[j] = get_block(ip, a[j]); 
+            a[j] = get_block(ip, a[j]);
+            block_written++;
+          }
+
+          if (block_written == LOGSIZE - NDIRECT) {
+            iunlock(ip);
+            end_op();
+            begin_op();
+            ilock(ip);
+            block_written = 0;
           }
       }
       log_write(new_bp);
