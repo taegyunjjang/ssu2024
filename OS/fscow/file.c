@@ -171,7 +171,7 @@ filecopy(struct file *fds, struct file *fdd){
     dst_ip->addrs[i] = src_ip->addrs[i];
   }
 
-  idup(src_ip);
+  idup(dst_ip);
   dst_ip->size = src_ip->size;
   dst_ip->shared = 1;
   iupdate(dst_ip);
