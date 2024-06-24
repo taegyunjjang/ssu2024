@@ -5,7 +5,7 @@ import cv2
 import torch
 import torch.nn as nn
 
-from nets.nn import resnet50
+from nets.nn import resnet152
 from utils.util import predict
 
 import argparse
@@ -41,7 +41,7 @@ COLORS = {'aeroplane': (0, 0, 0),
 
 def detect(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = resnet50().to(device)
+    model = resnet152().to(device)
 
     print('LOADING MODEL...')
     if torch.cuda.device_count() > 1:

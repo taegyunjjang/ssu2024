@@ -8,7 +8,7 @@ import torch
 import torch.utils.data as data
 
 import cv2
-
+import torchvision.transforms as transforms
 
 class Dataset(data.Dataset):
     image_size = 448
@@ -22,7 +22,7 @@ class Dataset(data.Dataset):
         self.f_names = []
         self.boxes = []
         self.labels = []
-        self.mean = (123, 117, 104)  # RGB의 평균값 -> 이후 normalization에 사용
+        self.mean = (123, 117, 104)  # RGB
 
         for line in file_names:
             line = line.rstrip()
@@ -46,28 +46,18 @@ class Dataset(data.Dataset):
         labels = self.labels[idx].clone()
 
         if self.train:
-            # img = self.random_bright(img)
             img, boxes = self.random_flip(img, boxes)
             img, boxes = self.randomScale(img, boxes)
-            img = self.randomBlur(img)
-            img = self.RandomBrightness(img)
-            img = self.RandomHue(img)
-            img = self.RandomSaturation(img)
+            
             img, boxes, labels = self.randomShift(img, boxes, labels)
             img, boxes, labels = self.randomCrop(img, boxes, labels)
 
-        # # debug
-        # box_show = boxes.numpy().reshape(-1)
-        # print(box_show)
-        # img_show = self.BGR2RGB(img)
-        # pt1=(int(box_show[0]),int(box_show[1])); pt2=(int(box_show[2]),int(box_show[3]))
-        # cv2.rectangle(img_show,pt1=pt1,pt2=pt2,color=(0,255,0),thickness=1)
-        # plt.figure()
-        #
-        # # cv2.rectangle(img,pt1=(10,10),pt2=(100,100),color=(0,255,0),thickness=1)
-        # plt.imshow(img_show)
-        # plt.show()
-        # # debug
+            ''' data augmentation 추가'''
+            img = self.cutout(img)
+            img = self.randomNoise(img)
+            img, boxes = self.randomRotate(img, boxes)
+            img, boxes, labels = self.dynamic_mosaic(img, boxes, labels)
+      
 
         h, w, _ = img.shape
         boxes /= torch.Tensor([w, h, w, h]).expand_as(boxes)
@@ -85,24 +75,24 @@ class Dataset(data.Dataset):
 
     def encoder(self, boxes, labels):
         grid_num = 14
-        target = torch.zeros((grid_num, grid_num, 30))  ### 14x14x30
+        target = torch.zeros((grid_num, grid_num, 30))
         cell_size = 1. / grid_num
-        wh = boxes[:, 2:] - boxes[:, :2]  ### 너비와 높이 계산
-        cxcy = (boxes[:, 2:] + boxes[:, :2]) / 2  ### box의 중심 좌표
+        wh = boxes[:, 2:] - boxes[:, :2]
+        cxcy = (boxes[:, 2:] + boxes[:, :2]) / 2
         for i in range(cxcy.size()[0]):
             cxcy_sample = cxcy[i]
             #grid cell의 Y축과 X축의 index 계산
-            ij = (cxcy_sample / cell_size).ceil() - 1  ### box가 속한 grid cell의 index 계산
+            ij = (cxcy_sample / cell_size).ceil() - 1
             #grid cell의 2개 bbox의  confidence score을 1로 set
-            target[int(ij[1]), int(ij[0]), 4] = 1  ### 4 : 첫번째 box의 confidence값
-            target[int(ij[1]), int(ij[0]), 9] = 1  ### 9 : 두번째 box의 confidence값
+            target[int(ij[1]), int(ij[0]), 4] = 1
+            target[int(ij[1]), int(ij[0]), 9] = 1
             #grid cell의 class probability을 1로 set
             target[int(ij[1]), int(ij[0]), int(labels[i]) + 9] = 1
             #bbox의 중심점 (cx,cy)를 (i,j) grid cell의 원점으로 부터
             # offset값으로 (delta_x, delta_y) 계산하고 target 행렬 tensor의 
             # (i,j) grid cell 위치에 정규화한 bbox정보를 저장
-            xy = ij * cell_size  ### grid cell 좌측 상단의 시작점
-            delta_xy = (cxcy_sample - xy) / cell_size  ### 중심에 대한 offset 값
+            xy = ij * cell_size
+            delta_xy = (cxcy_sample - xy) / cell_size
             target[int(ij[1]), int(ij[0]), 2:4] = wh[i]
             target[int(ij[1]), int(ij[0]), :2] = delta_xy
             target[int(ij[1]), int(ij[0]), 7:9] = wh[i]
@@ -117,7 +107,77 @@ class Dataset(data.Dataset):
 
     def HSV2BGR(self, img):
         return cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    
+    def randomNoise(self, img):
+        if random.random() < 0.5:
+            mean = 0
+            var = 0.1
+            sigma = var ** 0.5
+            gaussian = np.random.normal(mean, sigma, img.shape)
+            noisy_img = np.clip(img + gaussian, 0, 255).astype(np.uint8)
+            return noisy_img
+        else:
+            return img
 
+    def cutout(self, img):
+        if random.random() < 0.5:
+            h, w, _ = img.shape
+            length = min(h, w) // 4  # 잘라낼 영역의 크기를 이미지 크기의 1/4로 설정
+            start_h = random.randint(0, h - length)
+            start_w = random.randint(0, w - length)
+            img[start_h:start_h + length, start_w:start_w + length, :] = 0  # 잘라낸 영역을 검은색(0)으로 채움
+        return img
+
+    def randomRotate(self, bgr, boxes, angle_range=(-10, 10)):
+        if random.random() < 0.5:
+            angle = random.uniform(*angle_range)
+            height, width = bgr.shape[:2]
+            center = (width // 2, height // 2)
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            cos = np.abs(matrix[0, 0])
+            sin = np.abs(matrix[0, 1])
+            new_width = int((height * sin) + (width * cos))
+            new_height = int((height * cos) + (width * sin))
+            matrix[0, 2] += (new_width / 2) - center[0]
+            matrix[1, 2] += (new_height / 2) - center[1]
+            rotated_img = cv2.warpAffine(bgr, matrix, (new_width, new_height))
+            
+            # 바운딩 박스 좌표 회전
+            boxes_np = boxes.numpy()
+            for i in range(len(boxes_np)):
+                xmin, ymin, xmax, ymax = boxes_np[i]
+                points = np.array([[xmin, ymin], [xmax, ymin], [xmin, ymax], [xmax, ymax]])
+                ones = np.ones(shape=(len(points), 1))
+                points_ones = np.hstack([points, ones])
+                rotated_points = matrix @ points_ones.T
+                xmin, ymin = rotated_points[:2].min(axis=1)
+                xmax, ymax = rotated_points[:2].max(axis=1)
+                boxes_np[i] = [xmin, ymin, xmax, ymax]
+            boxes = torch.Tensor(boxes_np)
+            return rotated_img, boxes
+        return bgr, boxes
+    
+    def dynamic_mosaic(self, img, boxes, labels, ratio_range=(0.1, 0.3)):
+        h, w, _ = img.shape
+        new_img = img.copy()
+        ratio = np.random.uniform(ratio_range[0], ratio_range[1])
+        mosaiced_h = int(h * ratio)
+        mosaiced_w = int(w * ratio)
+        y_offset = np.random.randint(0, h - mosaiced_h + 1)
+        x_offset = np.random.randint(0, w - mosaiced_w + 1)
+        mosaic_area = img[y_offset:y_offset + mosaiced_h, x_offset:x_offset + mosaiced_w]
+        mosaic_area = cv2.resize(mosaic_area, (mosaiced_w, mosaiced_h), interpolation=cv2.INTER_NEAREST)
+        new_img[y_offset:y_offset + mosaiced_h, x_offset:x_offset + mosaiced_w] = mosaic_area
+
+        for i in range(len(boxes)):
+            box = boxes[i]
+            if box[0] >= x_offset and box[2] <= x_offset + mosaiced_w and box[1] >= y_offset and box[3] <= y_offset + mosaiced_h:
+                box[0] = (box[0] - x_offset) / mosaiced_w
+                box[1] = (box[1] - y_offset) / mosaiced_h
+                box[2] = (box[2] - x_offset) / mosaiced_w
+                box[3] = (box[3] - y_offset) / mosaiced_h
+        return new_img, boxes, labels
+    
     def RandomBrightness(self, bgr):
         if random.random() < 0.5:
             hsv = self.BGR2HSV(bgr)

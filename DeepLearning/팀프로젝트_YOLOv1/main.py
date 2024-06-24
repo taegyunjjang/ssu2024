@@ -7,7 +7,7 @@ import torch
 import torchvision
 from torchvision import transforms
 
-from nets.nn import resnet50
+from nets.nn import resnet50, resnet152
 from utils.loss import yoloLoss
 from utils.dataset import Dataset
 
@@ -26,9 +26,10 @@ def main(args):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    net = resnet50()
+    # net = resnet50()
+    net = resnet152()
 
-    
+
     if(args.pre_weights != None):
         pattern = 'yolov1_([0-9]+)'
         strs = args.pre_weights.split('.')[-2]
@@ -71,8 +72,6 @@ def main(args):
 
     optimizer = torch.optim.SGD(params, lr=learning_rate, momentum=0.9, weight_decay=5e-4)
 
-    #optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
-
     with open('./Dataset/train.txt') as f:
         train_names = f.readlines()
     train_dataset = Dataset(root, train_names, train=True, transform=[transforms.ToTensor()])
@@ -87,6 +86,10 @@ def main(args):
 
     print(f'NUMBER OF DATA SAMPLES: {len(train_dataset)}')
     print(f'BATCH SIZE: {batch_size}')
+
+    best_validation_loss = float("inf")
+    patience = 5
+    count = 0
 
     for epoch in range(epoch_start,num_epochs):
         net.train()
@@ -135,6 +138,16 @@ def main(args):
             
         validation_loss /= len(test_loader)
         print(f'Validation_Loss:{validation_loss:07.3}')
+
+        """ early stopping 추가 """
+        if validation_loss < best_validation_loss:
+            best_validation_loss = validation_loss
+            count = 0
+        else:
+            count += 1
+            if count >= patience:
+                print(f"Early stopping at epoch={epoch}")
+                break
         
         #if epoch % 5:
         #    save = {'state_dict': net.state_dict()}
@@ -150,7 +163,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--epoch", type=int, default=30)
+    parser.add_argument("--epoch", type=int, default=50)
     parser.add_argument("--lr", type=float, default=0.001)
     parser.add_argument("--data_dir", type=str, default='./Dataset')
     parser.add_argument("--pre_weights", type=str, help="pretrained weight")
